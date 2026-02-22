@@ -1,0 +1,263 @@
+name: Deploy NYC Tourism Pipeline
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  BUCKET_NAME: ${{ secrets.GCP_BUCKET_NAME }}
+  REGION: us-central1
+
+jobs:
+  # ── JOB 1: Deploy all Cloud Functions ──────────────────────────────────────
+  deploy-functions:
+    name: Deploy Cloud Functions
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      # ── Deploy scrape_opensky ─────────────────────────────────────────────
+      - name: Deploy scrape_opensky
+        run: |
+          gcloud functions deploy scrape_opensky \
+            --gen2 \
+            --runtime python311 \
+            --region ${{ env.REGION }} \
+            --source cloud_functions/scrape_opensky \
+            --entry-point scrape_opensky \
+            --trigger-http \
+            --allow-unauthenticated \
+            --memory 256MB \
+            --timeout 120s \
+            --set-env-vars BUCKET_NAME=${{ env.BUCKET_NAME }},OPENSKY_USER=${{ secrets.OPENSKY_USER }},OPENSKY_PASS=${{ secrets.OPENSKY_PASS }}
+
+      # ── Deploy scrape_trends ──────────────────────────────────────────────
+      - name: Deploy scrape_trends
+        run: |
+          gcloud functions deploy scrape_trends \
+            --gen2 \
+            --runtime python311 \
+            --region ${{ env.REGION }} \
+            --source cloud_functions/scrape_trends \
+            --entry-point scrape_trends \
+            --trigger-http \
+            --allow-unauthenticated \
+            --memory 256MB \
+            --timeout 120s \
+            --set-env-vars BUCKET_NAME=${{ env.BUCKET_NAME }}
+
+      # ── Deploy scrape_weather ─────────────────────────────────────────────
+      - name: Deploy scrape_weather
+        run: |
+          gcloud functions deploy scrape_weather \
+            --gen2 \
+            --runtime python311 \
+            --region ${{ env.REGION }} \
+            --source cloud_functions/scrape_weather \
+            --entry-point scrape_weather \
+            --trigger-http \
+            --allow-unauthenticated \
+            --memory 256MB \
+            --timeout 60s \
+            --set-env-vars BUCKET_NAME=${{ env.BUCKET_NAME }}
+
+      # ── Deploy scrape_ticketmaster ────────────────────────────────────────
+      - name: Deploy scrape_ticketmaster
+        run: |
+          gcloud functions deploy scrape_ticketmaster \
+            --gen2 \
+            --runtime python311 \
+            --region ${{ env.REGION }} \
+            --source cloud_functions/scrape_ticketmaster \
+            --entry-point scrape_ticketmaster \
+            --trigger-http \
+            --allow-unauthenticated \
+            --memory 256MB \
+            --timeout 120s \
+            --set-env-vars BUCKET_NAME=${{ env.BUCKET_NAME }},TM_API_KEY=${{ secrets.TM_API_KEY }}
+
+      # ── Deploy materialize ────────────────────────────────────────────────
+      - name: Deploy materialize
+        run: |
+          gcloud functions deploy materialize \
+            --gen2 \
+            --runtime python311 \
+            --region ${{ env.REGION }} \
+            --source cloud_functions/materialize \
+            --entry-point materialize \
+            --trigger-http \
+            --allow-unauthenticated \
+            --memory 512MB \
+            --timeout 300s \
+            --set-env-vars BUCKET_NAME=${{ env.BUCKET_NAME }}
+
+      # ── Deploy run_model ──────────────────────────────────────────────────
+      - name: Deploy run_model
+        run: |
+          gcloud functions deploy run_model \
+            --gen2 \
+            --runtime python311 \
+            --region ${{ env.REGION }} \
+            --source cloud_functions/run_model \
+            --entry-point run_model \
+            --trigger-http \
+            --allow-unauthenticated \
+            --memory 4096MB \
+            --timeout 540s \
+            --set-env-vars BUCKET_NAME=${{ env.BUCKET_NAME }}
+
+  # ── JOB 2: Set up Cloud Scheduler (runs after deploy) ─────────────────────
+  setup-scheduler:
+    name: Configure Cloud Scheduler
+    runs-on: ubuntu-latest
+    needs: deploy-functions
+
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Get Function URLs
+        id: get_urls
+        run: |
+          # Fetch URLs for all deployed functions
+          OPENSKY_URL=$(gcloud functions describe scrape_opensky --region ${{ env.REGION }} --gen2 --format='value(serviceConfig.uri)')
+          TRENDS_URL=$(gcloud functions describe scrape_trends --region ${{ env.REGION }} --gen2 --format='value(serviceConfig.uri)')
+          WEATHER_URL=$(gcloud functions describe scrape_weather --region ${{ env.REGION }} --gen2 --format='value(serviceConfig.uri)')
+          TM_URL=$(gcloud functions describe scrape_ticketmaster --region ${{ env.REGION }} --gen2 --format='value(serviceConfig.uri)')
+          MATERIALIZE_URL=$(gcloud functions describe materialize --region ${{ env.REGION }} --gen2 --format='value(serviceConfig.uri)')
+          MODEL_URL=$(gcloud functions describe run_model --region ${{ env.REGION }} --gen2 --format='value(serviceConfig.uri)')
+
+          echo "opensky_url=$OPENSKY_URL" >> $GITHUB_OUTPUT
+          echo "trends_url=$TRENDS_URL" >> $GITHUB_OUTPUT
+          echo "weather_url=$WEATHER_URL" >> $GITHUB_OUTPUT
+          echo "tm_url=$TM_URL" >> $GITHUB_OUTPUT
+          echo "materialize_url=$MATERIALIZE_URL" >> $GITHUB_OUTPUT
+          echo "model_url=$MODEL_URL" >> $GITHUB_OUTPUT
+
+      # Schedule: OpenSky every hour at :00 (EST = UTC-5)
+      - name: Schedule scrape_opensky
+        run: |
+          gcloud scheduler jobs create http scrape-opensky-hourly \
+            --location ${{ env.REGION }} \
+            --schedule "0 * * * *" \
+            --uri "${{ steps.get_urls.outputs.opensky_url }}" \
+            --http-method GET \
+            --time-zone "America/New_York" \
+            --attempt-deadline 120s \
+            || gcloud scheduler jobs update http scrape-opensky-hourly \
+            --location ${{ env.REGION }} \
+            --schedule "0 * * * *" \
+            --uri "${{ steps.get_urls.outputs.opensky_url }}" \
+            --time-zone "America/New_York"
+
+      # Schedule: Google Trends every 6 hours (data updates slowly)
+      - name: Schedule scrape_trends
+        run: |
+          gcloud scheduler jobs create http scrape-trends-6h \
+            --location ${{ env.REGION }} \
+            --schedule "0 */6 * * *" \
+            --uri "${{ steps.get_urls.outputs.trends_url }}" \
+            --http-method GET \
+            --time-zone "America/New_York" \
+            --attempt-deadline 120s \
+            || gcloud scheduler jobs update http scrape-trends-6h \
+            --location ${{ env.REGION }} \
+            --schedule "0 */6 * * *" \
+            --uri "${{ steps.get_urls.outputs.trends_url }}" \
+            --time-zone "America/New_York"
+
+      # Schedule: Weather every 6 hours
+      - name: Schedule scrape_weather
+        run: |
+          gcloud scheduler jobs create http scrape-weather-6h \
+            --location ${{ env.REGION }} \
+            --schedule "15 */6 * * *" \
+            --uri "${{ steps.get_urls.outputs.weather_url }}" \
+            --http-method GET \
+            --time-zone "America/New_York" \
+            --attempt-deadline 60s \
+            || gcloud scheduler jobs update http scrape-weather-6h \
+            --location ${{ env.REGION }} \
+            --schedule "15 */6 * * *" \
+            --uri "${{ steps.get_urls.outputs.weather_url }}" \
+            --time-zone "America/New_York"
+
+      # Schedule: Ticketmaster once per day at 1:00 AM ET
+      - name: Schedule scrape_ticketmaster
+        run: |
+          gcloud scheduler jobs create http scrape-ticketmaster-daily \
+            --location ${{ env.REGION }} \
+            --schedule "0 1 * * *" \
+            --uri "${{ steps.get_urls.outputs.tm_url }}" \
+            --http-method GET \
+            --time-zone "America/New_York" \
+            --attempt-deadline 120s \
+            || gcloud scheduler jobs update http scrape-ticketmaster-daily \
+            --location ${{ env.REGION }} \
+            --schedule "0 1 * * *" \
+            --uri "${{ steps.get_urls.outputs.tm_url }}" \
+            --time-zone "America/New_York"
+
+      # Schedule: Materialize daily at 2:00 AM ET (after all scrapers complete)
+      - name: Schedule materialize
+        run: |
+          gcloud scheduler jobs create http materialize-daily \
+            --location ${{ env.REGION }} \
+            --schedule "0 2 * * *" \
+            --uri "${{ steps.get_urls.outputs.materialize_url }}" \
+            --http-method POST \
+            --message-body '{}' \
+            --time-zone "America/New_York" \
+            --attempt-deadline 300s \
+            || gcloud scheduler jobs update http materialize-daily \
+            --location ${{ env.REGION }} \
+            --schedule "0 2 * * *" \
+            --uri "${{ steps.get_urls.outputs.materialize_url }}" \
+            --time-zone "America/New_York"
+
+      # Schedule: Model retraining daily at 3:00 AM ET (after materialize)
+      - name: Schedule run_model
+        run: |
+          gcloud scheduler jobs create http run-model-daily \
+            --location ${{ env.REGION }} \
+            --schedule "0 3 * * *" \
+            --uri "${{ steps.get_urls.outputs.model_url }}" \
+            --http-method GET \
+            --time-zone "America/New_York" \
+            --attempt-deadline 540s \
+            || gcloud scheduler jobs update http run-model-daily \
+            --location ${{ env.REGION }} \
+            --schedule "0 3 * * *" \
+            --uri "${{ steps.get_urls.outputs.model_url }}" \
+            --time-zone "America/New_York"
+
+      - name: Scheduler setup complete
+        run: |
+          echo "✅ Pipeline schedule:"
+          echo "  :00 every hour  → scrape_opensky"
+          echo "  :15 every 6hrs  → scrape_weather"
+          echo "  :00 every 6hrs  → scrape_trends"
+          echo "  1:00 AM daily   → scrape_ticketmaster"
+          echo "  2:00 AM daily   → materialize (build feature row)"
+          echo "  3:00 AM daily   → run_model (retrain + predict)"
