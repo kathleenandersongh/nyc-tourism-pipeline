@@ -26,7 +26,7 @@ from google.cloud import storage
 BUCKET_NAME = os.environ.get("BUCKET_NAME", "your-bucket-name")
 
 # Feature weights for the tourism index target variable
-# Adjust these after analyzing your data — flights are the most reliable signal
+# Adjust these after analyzing — flights are the most reliable signal
 WEIGHTS = {
     "flights": 0.50,
     "trends": 0.30,
