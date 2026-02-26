@@ -89,6 +89,20 @@ jobs:
             --memory 256MB \
             --timeout 120s \
             --set-env-vars BUCKET_NAME=${{ env.BUCKET_NAME }},TM_API_KEY=${{ secrets.TM_API_KEY }}
+      # ── Deploy scrape_booking ────────────────────────────────────────
+      - name: Deploy scrape_booking
+        run: |
+          gcloud functions deploy scrape_booking \
+            --gen2 \
+            --runtime python311 \
+            --region ${{ env.REGION }} \
+            --source cloud_functions/scrape_booking \
+            --entry-point scrape_booking \
+            --trigger-http \
+            --allow-unauthenticated \
+            --memory 512MB \
+            --timeout 300s \
+            --set-env-vars BUCKET_NAME=${{ env.BUCKET_NAME }}
 
       # ── Deploy materialize ────────────────────────────────────────────────
       - name: Deploy materialize
@@ -145,6 +159,7 @@ jobs:
           TRENDS_URL=$(gcloud functions describe scrape_trends --region ${{ env.REGION }} --gen2 --format='value(serviceConfig.uri)')
           WEATHER_URL=$(gcloud functions describe scrape_weather --region ${{ env.REGION }} --gen2 --format='value(serviceConfig.uri)')
           TM_URL=$(gcloud functions describe scrape_ticketmaster --region ${{ env.REGION }} --gen2 --format='value(serviceConfig.uri)')
+          BOOKING_URL=$(gcloud functions describe scrape_booking --region ${{ env.REGION }} --gen2 --format='value(serviceConfig.uri)')
           MATERIALIZE_URL=$(gcloud functions describe materialize --region ${{ env.REGION }} --gen2 --format='value(serviceConfig.uri)')
           MODEL_URL=$(gcloud functions describe run_model --region ${{ env.REGION }} --gen2 --format='value(serviceConfig.uri)')
 
@@ -152,6 +167,7 @@ jobs:
           echo "trends_url=$TRENDS_URL" >> $GITHUB_OUTPUT
           echo "weather_url=$WEATHER_URL" >> $GITHUB_OUTPUT
           echo "tm_url=$TM_URL" >> $GITHUB_OUTPUT
+          echo "booking_url=$BOOKING_URL" >> $GITHUB_OUTPUT
           echo "materialize_url=$MATERIALIZE_URL" >> $GITHUB_OUTPUT
           echo "model_url=$MODEL_URL" >> $GITHUB_OUTPUT
 
@@ -217,6 +233,22 @@ jobs:
             --location ${{ env.REGION }} \
             --schedule "0 1 * * *" \
             --uri "${{ steps.get_urls.outputs.tm_url }}" \
+            --time-zone "America/New_York"
+      
+      # Schedule: Booking once per day at 12:30 AM ET
+      - name: Schedule scrape_booking
+        run: |
+          gcloud scheduler jobs create http scrape-booking-daily \
+            --location ${{ env.REGION }} \
+            --schedule "30 0 * * *" \
+            --uri "${{ steps.get_urls.outputs.booking_url }}" \
+            --http-method GET \
+            --time-zone "America/New_York" \
+            --attempt-deadline 300s \
+            || gcloud scheduler jobs update http scrape-booking-daily \
+            --location ${{ env.REGION }} \
+            --schedule "30 0 * * *" \
+            --uri "${{ steps.get_urls.outputs.booking_url }}" \
             --time-zone "America/New_York"
 
       # Schedule: Materialize daily at 2:00 AM ET (after all scrapers complete)
