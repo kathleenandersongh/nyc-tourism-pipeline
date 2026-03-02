@@ -1,20 +1,47 @@
 import io
 import os
+import subprocess
 import pandas as pd
 from playwright.sync_api import sync_playwright
 from datetime import date, timedelta
 import statistics
 from google.cloud import storage
 
+# ─────────────────────────────────────────────
+# Auto-install Chromium for Cloud Functions
+# ─────────────────────────────────────────────
+
+PLAYWRIGHT_MARKER = "/tmp/playwright-installed"
+
+if not os.path.exists(PLAYWRIGHT_MARKER):
+    subprocess.run(["playwright", "install", "chromium"], check=True)
+    open(PLAYWRIGHT_MARKER, "w").close()
+
+
+# ─────────────────────────────────────────────
+# Config
+# ─────────────────────────────────────────────
+
 LAT = 40.7484
 LON = -73.9857
 RADIUS = 1.6
+
 CHECKIN_DAYS = [7, 30, 60]
 
-BUCKET_NAME = os.getenv("BUCKET_NAME", "nyc-tourism-kathleen-2026")
+BUCKET_NAME = os.getenv(
+    "BUCKET_NAME",
+    "nyc-tourism-kathleen-2026"
+)
+
+
+# ─────────────────────────────────────────────
+# URL Builder
+# ─────────────────────────────────────────────
 
 def build_url(checkin: date) -> str:
+
     checkout = checkin + timedelta(days=1)
+
     return (
         "https://www.booking.com/searchresults.html"
         f"?ss=Empire+State+Building"
@@ -28,35 +55,62 @@ def build_url(checkin: date) -> str:
         f"&no_rooms=1"
     )
 
+
+# ─────────────────────────────────────────────
+# Scraper
+# ─────────────────────────────────────────────
+
 def scrape() -> pd.DataFrame:
+
     today = date.today()
+
     rows = []
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox"]
+        )
+
         page = browser.new_page()
 
         for days in CHECKIN_DAYS:
+
             checkin = today + timedelta(days=days)
+
             url = build_url(checkin)
 
             page.goto(url, timeout=60000)
+
             page.wait_for_timeout(12000)
 
             prices = []
-            cards = page.query_selector_all('[data-testid="property-card"]')
+
+            cards = page.query_selector_all(
+                '[data-testid="property-card"]'
+            )
 
             for c in cards:
-                price_el = c.query_selector('[data-testid="price-and-discounted-price"]')
+
+                price_el = c.query_selector(
+                    '[data-testid="price-and-discounted-price"]'
+                )
+
                 if not price_el:
                     continue
 
                 text = price_el.inner_text()
-                digits = "".join(ch for ch in text if ch.isdigit())
+
+                digits = "".join(
+                    ch for ch in text if ch.isdigit()
+                )
+
                 if digits:
                     prices.append(int(digits))
 
             if prices:
+
                 rows.append(
                     {
                         "date": str(today),
@@ -74,21 +128,47 @@ def scrape() -> pd.DataFrame:
 
     return pd.DataFrame(rows)
 
+
+# ─────────────────────────────────────────────
+# Upload to GCS
+# ─────────────────────────────────────────────
+
 def upload_to_gcs(df: pd.DataFrame) -> str:
+
     client = storage.Client()
+
     bucket = client.bucket(BUCKET_NAME)
 
-    object_name = f"scrapes/booking/booking_esb_features_{date.today()}.csv"
+    object_name = (
+        f"scrapes/booking/"
+        f"booking_esb_features_{date.today()}.csv"
+    )
 
     buf = io.StringIO()
+
     df.to_csv(buf, index=False)
 
     blob = bucket.blob(object_name)
-    blob.upload_from_string(buf.getvalue(), content_type="text/csv")
+
+    blob.upload_from_string(
+        buf.getvalue(),
+        content_type="text/csv"
+    )
 
     return object_name
 
+
+# ─────────────────────────────────────────────
+# Cloud Function Entry
+# ─────────────────────────────────────────────
+
 def scrape_booking(request):
+
     df = scrape()
+
     object_name = upload_to_gcs(df)
-    return f"OK: rows={len(df)} wrote={object_name}\n"
+
+    return (
+        f"OK: rows={len(df)} "
+        f"wrote={object_name}\n"
+    )
