@@ -100,9 +100,10 @@ jobs:
             --entry-point scrape_booking \
             --trigger-http \
             --allow-unauthenticated \
-            --memory 512MB \
+            --memory 1024MB \
             --timeout 300s \
-            --set-env-vars BUCKET_NAME=${{ env.BUCKET_NAME }}
+            --set-env-vars BUCKET_NAME=${{ env.BUCKET_NAME }} \
+            --build-env-vars PLAYWRIGHT_BROWSERS_PATH=/layers/playwright
 
       # ── Deploy materialize ────────────────────────────────────────────────
       - name: Deploy materialize
