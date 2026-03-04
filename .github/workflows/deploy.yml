@@ -31,7 +31,6 @@ jobs:
         with:
           project_id: ${{ env.PROJECT_ID }}
 
-
       # OpenSky
       - name: Deploy scrape_opensky
         run: |
@@ -46,7 +45,6 @@ jobs:
             --memory 256MB \
             --timeout 120s \
             --set-env-vars BUCKET_NAME=${{ env.BUCKET_NAME }},OPENSKY_USER=${{ secrets.OPENSKY_USER }},OPENSKY_PASS=${{ secrets.OPENSKY_PASS }}
-
 
       # Trends
       - name: Deploy scrape_trends
@@ -63,7 +61,6 @@ jobs:
             --timeout 120s \
             --set-env-vars BUCKET_NAME=${{ env.BUCKET_NAME }}
 
-
       # Weather
       - name: Deploy scrape_weather
         run: |
@@ -78,7 +75,6 @@ jobs:
             --memory 256MB \
             --timeout 60s \
             --set-env-vars BUCKET_NAME=${{ env.BUCKET_NAME }}
-
 
       # Ticketmaster
       - name: Deploy scrape_ticketmaster
@@ -95,23 +91,6 @@ jobs:
             --timeout 120s \
             --set-env-vars BUCKET_NAME=${{ env.BUCKET_NAME }},TM_API_KEY=${{ secrets.TM_API_KEY }}
 
-
-      # Booking (FIXED)
-      - name: Deploy scrape_booking
-        run: |
-          gcloud functions deploy scrape_booking \
-            --gen2 \
-            --runtime python311 \
-            --region ${{ env.REGION }} \
-            --source cloud_functions/scrape_booking \
-            --entry-point scrape_booking \
-            --trigger-http \
-            --allow-unauthenticated \
-            --memory 1024MB \
-            --timeout 300s \
-            --set-env-vars BUCKET_NAME=${{ env.BUCKET_NAME }}
-
-
       # Materialize
       - name: Deploy materialize
         run: |
@@ -127,7 +106,6 @@ jobs:
             --timeout 300s \
             --set-env-vars BUCKET_NAME=${{ env.BUCKET_NAME }}
 
-
       # Model
       - name: Deploy run_model
         run: |
@@ -142,7 +120,6 @@ jobs:
             --memory 4096MB \
             --timeout 540s \
             --set-env-vars BUCKET_NAME=${{ env.BUCKET_NAME }}
-
 
   setup-scheduler:
     name: Configure Cloud Scheduler
